@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Translator</title>
+    <style>
+        :root { --primary: #007aff; --bg: #ffffff; }
+        body { font-family: -apple-system, sans-serif; background: var(--bg); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .container { width: 100%; max-width: 500px; }
+        input { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #d2d2d7; box-sizing: border-box; font-size: 14px; background: #f5f5f7; margin-bottom: 24px; }
+        .main { display: flex; flex-direction: column; align-items: center; margin-bottom: 40px; }
+        #btn { background: var(--primary); color: white; border: none; width: 72px; height: 72px; border-radius: 50%; font-size: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
+        #btn.rec { background: #ff3b30; transform: scale(1.1); }
+        #status { margin-top: 12px; font-size: 13px; color: #86868b; }
+        h3 { font-size: 18px; border-bottom: 1px solid #d2d2d7; padding-bottom: 8px; display: flex; justify-content: space-between; }
+        .item { border-bottom: 1px solid #f5f5f7; padding: 12px 0; }
+        .label { font-size: 10px; font-weight: bold; color: #86868b; text-transform: uppercase; }
+        .in { font-size: 15px; margin-bottom: 4px; }
+        .out { font-size: 17px; color: var(--primary); font-weight: 600; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <input type="password" id="key" placeholder="OpenAI Key">
+        <div class="main">
+            <button id="btn">🎤</button>
+            <div id="status">Tap to start</div>
+        </div>
+        <h3>History <span style="font-size:12px; color:#ff3b30; cursor:pointer" onclick="clearH()">Clear</span></h3>
+        <div id="list"></div>
+    </div>
+
+    <script>
+        let rec; let chunks = [];
+        const btn = document.getElementById('btn');
+        const list = document.getElementById('list');
+
+        window.onload = () => {
+            render();
+            if(localStorage.getItem('k')) document.getElementById('key').value = localStorage.getItem('k');
+        };
+
+        btn.onclick = async () => {
+            const k = document.getElementById('key').value;
+            if(!k) return alert("Key!");
+            localStorage.setItem('k', k);
+
+            if(rec && rec.state === "recording") { rec.stop(); return; }
+
+            const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+            rec = new MediaRecorder(s);
+            chunks = [];
+            rec.ondataavailable = e => chunks.push(e.data);
+            rec.onstop = async () => {
+                btn.classList.remove('rec'); btn.innerText = "🎤";
+                process(new Blob(chunks), k);
+            };
+            rec.start();
+            btn.classList.add('rec'); btn.innerText = "■";
+            document.getElementById('status').innerText = "Listening...";
+        };
+
+        async function process(blob, k) {
+            try {
+                // 1. Whisper (認識)
+                const fd = new FormData();
+                fd.append("file", blob, "a.wav");
+                fd.append("model", "whisper-1");
+                const stt = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+                    method: "POST", headers: { "Authorization": `Bearer ${k}` }, body: fd
+                });
+                const { text: jp } = await stt.json();
+
+                // 日本語を即座に表示
+                const id = Date.now();
+                list.insertAdjacentHTML('afterbegin', `<div class="item" id="${id}"><div class="label">In</div><div class="in">${jp}</div><div class="label">Out</div><div class="out" id="out-${id}">...</div></div>`);
+
+                // 2. GPT-4o-mini (翻訳)
+                const gpt = await fetch("https://api.openai.com/v1/chat/completions", {
+                    method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
+                    body: JSON.stringify({ model: "gpt-4o-mini", messages: [{role:"system",content:"Translate to English."}, {role:"user",content:jp}] })
+                });
+                const gptD = await gpt.json();
+                const en = gptD.choices[0].message.content;
+
+                // 表示更新
+                document.getElementById(`out-${id}`).innerText = en;
+
+                // 3. TTS (音声)
+                const tts = await fetch("https://api.openai.com/v1/audio/speech", {
+                    method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
+                    body: JSON.stringify({ model: "tts-1", voice: "alloy", input: en })
+                });
+                const ab = await tts.blob();
+                new Audio(URL.createObjectURL(ab)).play();
+
+                // 保存
+                const h = JSON.parse(localStorage.getItem('h') || '[]');
+                h.unshift({ jp, en });
+                localStorage.setItem('h', JSON.stringify(h.slice(0, 30)));
+            } catch(e) { console.error(e); }
+        }
+
+        function render() {
+            const h = JSON.parse(localStorage.getItem('h') || '[]');
+            list.innerHTML = h.map(i => `<div class="item"><div class="label">In</div><div class="in">${i.jp}</div><div class="label">Out</div><div class="out" onclick="sp('${i.en.replace(/'/g,"")}')">${i.en}</div></div>`).join('');
+        }
+
+        function clearH() { localStorage.removeItem('h'); render(); }
+
+        async function sp(t) {
+            const k = document.getElementById('key').value;
+            const res = await fetch("https://api.openai.com/v1/audio/speech", {
+                method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
+                body: JSON.stringify({ model: "tts-1", voice: "alloy", input: t })
+            });
+            new Audio(URL.createObjectURL(await res.blob())).play();
+        }
+    </script>
+</body>
+</html>
