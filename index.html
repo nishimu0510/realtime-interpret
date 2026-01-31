@@ -118,4 +118,31 @@
                 audio.play();
 
                 const h = JSON.parse(localStorage.getItem('h') || '[]');
-                h.unshift({ jp, en
+                h.unshift({ jp, en });
+                localStorage.setItem('h', JSON.stringify(h.slice(0, 30)));
+
+                document.getElementById('status').innerText = "Tap to start";
+            } catch(e) {
+                document.getElementById('status').innerText = "Error: Check API Key";
+                console.error(e);
+            }
+        }
+
+        function render() {
+            const h = JSON.parse(localStorage.getItem('h') || '[]');
+            list.innerHTML = h.map(i => `<div class="item"><div class="label">In</div><div class="in">${i.jp}</div><div class="label">Out</div><div class="out" onclick="sp('${i.en.replace(/'/g,"")}')">${i.en}</div></div>`).join('');
+        }
+
+        function clearH() { localStorage.removeItem('h'); render(); }
+
+        async function sp(t) {
+            const k = document.getElementById('key').value;
+            const res = await fetch("https://api.openai.com/v1/audio/speech", {
+                method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
+                body: JSON.stringify({ model: "tts-1", voice: "alloy", input: t })
+            });
+            new Audio(URL.createObjectURL(await res.blob())).play();
+        }
+    </script>
+</body>
+</html>
