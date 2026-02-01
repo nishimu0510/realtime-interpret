@@ -32,11 +32,31 @@
     </div>
 
     <script>
-        let rec; 
+        let rec;
         let chunks = [];
         let audioStream = null;
+        let audioCtx = null;
         const btn = document.getElementById('btn');
         const list = document.getElementById('list');
+
+        // タイムアウト付きfetch
+        function fetchWithTimeout(url, options, ms = 30000) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), ms);
+            return fetch(url, { ...options, signal: controller.signal })
+                .finally(() => clearTimeout(timer));
+        }
+
+        // AudioContextで音声を再生（iOS自動再生制限を回避）
+        async function playAudioBlob(blob) {
+            const arrayBuffer = await blob.arrayBuffer();
+            const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+            const source = audioCtx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioCtx.destination);
+            source.start();
+            return new Promise(resolve => { source.onended = resolve; });
+        }
 
         window.onload = () => {
             render();
@@ -57,10 +77,18 @@
             if(!k) return alert("Enter OpenAI API Key");
             localStorage.setItem('k', k);
 
+            // AudioContextをユーザー操作時に初期化/再開（iOS対策）
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                await audioCtx.resume();
+            }
+
             // 録音停止
-            if(rec && rec.state === "recording") { 
-                rec.stop(); 
-                return; 
+            if(rec && rec.state === "recording") {
+                rec.stop();
+                return;
             }
 
             try {
@@ -117,9 +145,9 @@
                 fd.append("language", "ja");
 
                 // 1. Whisper (音声認識)
-                const sttResponse = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+                const sttResponse = await fetchWithTimeout("https://api.openai.com/v1/audio/transcriptions", {
                     method: "POST", headers: { "Authorization": `Bearer ${k}` }, body: fd
-                });
+                }, 30000);
                 const sttData = await sttResponse.json();
                 const jp = sttData.text;
 
@@ -138,46 +166,44 @@
                 `);
 
                 // 2. GPT-4o-mini (翻訳)
-                const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+                const gptResponse = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
                     method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
-                    body: JSON.stringify({ 
-                        model: "gpt-4o-mini", 
+                    body: JSON.stringify({
+                        model: "gpt-4o-mini",
                         messages: [
-                            {role:"system", content:"Translate the following Japanese to natural English. Return only the translated text."}, 
+                            {role:"system", content:"Translate the following Japanese to natural English. Return only the translated text."},
                             {role:"user", content:jp}
-                        ] 
+                        ]
                     })
-                });
+                }, 15000);
                 const gptData = await gptResponse.json();
                 const en = gptData.choices[0].message.content;
 
                 document.getElementById(`out-${id}`).innerText = en;
 
                 // 3. TTS (音声合成)
-                const ttsResponse = await fetch("https://api.openai.com/v1/audio/speech", {
+                const ttsResponse = await fetchWithTimeout("https://api.openai.com/v1/audio/speech", {
                     method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
                     body: JSON.stringify({ model: "tts-1", voice: "alloy", input: en })
-                });
-                
-                const audioBlob = await ttsResponse.blob();
-                const audioUrl = URL.createObjectURL(audioBlob);
-                const audio = new Audio(audioUrl);
-                
-                audio.onended = () => {
-                    document.getElementById('status').innerText = "Tap to start";
-                    URL.revokeObjectURL(audioUrl);
-                };
+                }, 15000);
 
-                audio.play();
+                const audioBlob = await ttsResponse.blob();
+                try {
+                    await playAudioBlob(audioBlob);
+                } catch(playErr) {
+                    console.error("Audio play failed:", playErr);
+                }
+                document.getElementById('status').innerText = "Tap to start";
 
                 // 履歴をLocalStorageへ保存
                 const h = JSON.parse(localStorage.getItem('h') || '[]');
                 h.unshift({ jp, en });
                 localStorage.setItem('h', JSON.stringify(h.slice(0, 30)));
                 
-            } catch(e) { 
-                document.getElementById('status').innerText = "Error: API limit or key issue";
-                console.error(e); 
+            } catch(e) {
+                const msg = e.name === 'AbortError' ? "Error: Timeout" : "Error: API limit or key issue";
+                document.getElementById('status').innerText = msg;
+                console.error(e);
             }
         }
 
@@ -202,12 +228,16 @@
             const k = document.getElementById('key').value;
             if(!k) return;
             try {
-                const res = await fetch("https://api.openai.com/v1/audio/speech", {
+                if (!audioCtx) {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (audioCtx.state === 'suspended') await audioCtx.resume();
+                const res = await fetchWithTimeout("https://api.openai.com/v1/audio/speech", {
                     method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
                     body: JSON.stringify({ model: "tts-1", voice: "alloy", input: t })
-                });
+                }, 15000);
                 const blob = await res.blob();
-                new Audio(URL.createObjectURL(blob)).play();
+                await playAudioBlob(blob);
             } catch(e) { console.error(e); }
         }
     </script>
