@@ -39,6 +39,9 @@ module.exports = async (req, res) => {
           Date: {
             date: { start: new Date().toISOString().split('T')[0] },
           },
+          Material: {
+            rich_text: [{ text: { content: 'realtime' } }],
+          },
         },
       }),
     });
