@@ -40,7 +40,7 @@ module.exports = async (req, res) => {
             date: { start: new Date().toISOString().split('T')[0] },
           },
           Material: {
-            rich_text: [{ text: { content: 'realtime' } }],
+            select: { name: 'realtime' },
           },
         },
       }),
