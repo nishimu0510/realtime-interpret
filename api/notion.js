@@ -1,7 +1,9 @@
 function extractDatabaseId(input) {
-  const clean = input.replace(/-/g, '');
+  // URLの場合、?v= より前のパス部分からIDを取る
+  const path = input.split('?')[0];
+  const clean = path.replace(/-/g, '');
   const match = clean.match(/([0-9a-f]{32})/i);
-  return match ? match[1] : input;
+  return match ? match[1] : input.replace(/-/g, '');
 }
 
 module.exports = async (req, res) => {
