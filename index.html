@@ -179,7 +179,9 @@
                 const gptData = await gptResponse.json();
                 const en = gptData.choices[0].message.content;
 
-                document.getElementById(`out-${id}`).innerText = en;
+                const outEl = document.getElementById(`out-${id}`);
+                outEl.innerText = en;
+                outEl.onclick = () => sp(en);
 
                 // 3. TTS (音声合成)
                 const ttsResponse = await fetchWithTimeout("https://api.openai.com/v1/audio/speech", {
