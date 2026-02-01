@@ -10,9 +10,9 @@
         .container { width: 100%; max-width: 500px; }
         input { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #d2d2d7; box-sizing: border-box; font-size: 14px; background: #f5f5f7; margin-bottom: 24px; }
         .main { display: flex; flex-direction: column; align-items: center; margin-bottom: 40px; }
-        #btn { background: var(--primary); color: white; border: none; width: 72px; height: 72px; border-radius: 50%; font-size: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        #btn { background: var(--primary); color: white; border: none; width: 72px; height: 72px; border-radius: 50%; font-size: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
         #btn.rec { background: #ff3b30; transform: scale(1.1); box-shadow: 0 0 15px rgba(255,59,48,0.5); }
-        #status { margin-top: 12px; font-size: 13px; color: #86868b; }
+        #status { margin-top: 12px; font-size: 13px; color: #86868b; height: 1.2em; }
         h3 { font-size: 18px; border-bottom: 1px solid #d2d2d7; padding-bottom: 8px; display: flex; justify-content: space-between; }
         .item { border-bottom: 1px solid #f5f5f7; padding: 12px 0; }
         .label { font-size: 10px; font-weight: bold; color: #86868b; text-transform: uppercase; }
@@ -27,121 +27,188 @@
             <button id="btn">🎤</button>
             <div id="status">Tap to start</div>
         </div>
-        <h3>History <span style="font-size:12px; color:#ff3b30; cursor:pointer" onclick="clearH()">Clear</span></h3>
+        <h3>History <span style="font-size:12px; color:#ff3b30; cursor:pointer" onclick="clearH()">Clear all</span></h3>
         <div id="list"></div>
     </div>
 
     <script>
-        let rec; let chunks = [];
+        let rec; 
+        let chunks = [];
+        let audioStream = null;
         const btn = document.getElementById('btn');
         const list = document.getElementById('list');
 
         window.onload = () => {
             render();
-            if(localStorage.getItem('k')) document.getElementById('key').value = localStorage.getItem('k');
+            const savedKey = localStorage.getItem('k');
+            if(savedKey) document.getElementById('key').value = savedKey;
         };
+
+        // マイクストリームを完全に停止する関数
+        function stopStream() {
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+        }
 
         btn.onclick = async () => {
             const k = document.getElementById('key').value;
-            if(!k) return alert("Enter Key");
+            if(!k) return alert("Enter OpenAI API Key");
             localStorage.setItem('k', k);
 
+            // 録音停止
             if(rec && rec.state === "recording") { 
                 rec.stop(); 
                 return; 
             }
 
             try {
-                const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-                // ブラウザがサポートしている形式を自動選択
+                // 以前のストリームがあれば確実に停止
+                stopStream();
+
+                // マイクの権利を新規取得（Bluetoothの接続リセットを促す）
+                audioStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    } 
+                });
+
                 const type = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/mp4';
-                rec = new MediaRecorder(s, { mimeType: type });
+                rec = new MediaRecorder(audioStream, { mimeType: type });
                 
                 chunks = [];
                 rec.ondataavailable = e => { if(e.data.size > 0) chunks.push(e.data); };
+                
                 rec.onstop = async () => {
                     btn.classList.remove('rec'); btn.innerText = "🎤";
+                    
+                    // 録音直後にストリームを停止してマイクを解放（AirPods再生への切り替えをスムーズにする）
+                    stopStream();
+
                     const blob = new Blob(chunks, { type: rec.mimeType });
-                    process(blob, k);
+                    processAudio(blob, k, type);
                 };
+                
                 rec.start();
                 btn.classList.add('rec'); btn.innerText = "■";
                 document.getElementById('status').innerText = "Recording...";
-            } catch(e) { alert("Mic error: " + e.message); }
+            } catch(e) { 
+                alert("Mic error: " + e.message); 
+                document.getElementById('status').innerText = "Mic access denied";
+            }
         };
 
-        async function process(blob, k) {
-            if (blob.size < 1000) { // 極端に小さいデータは無視
+        async function processAudio(blob, k, mimeType) {
+            if (blob.size < 1000) {
                 document.getElementById('status').innerText = "Too short or silent";
                 return;
             }
 
             try {
-                document.getElementById('status').innerText = "Transcribing...";
+                document.getElementById('status').innerText = "Thinking...";
                 
                 const fd = new FormData();
-                // 拡張子を適切に設定
-                const ext = rec.mimeType.includes('webm') ? 'webm' : 'm4a';
+                const ext = mimeType.includes('webm') ? 'webm' : 'm4a';
                 fd.append("file", blob, `audio.${ext}`);
                 fd.append("model", "whisper-1");
                 fd.append("language", "ja");
 
-                const stt = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+                // 1. Whisper (音声認識)
+                const sttResponse = await fetch("https://api.openai.com/v1/audio/transcriptions", {
                     method: "POST", headers: { "Authorization": `Bearer ${k}` }, body: fd
                 });
-                const sttD = await stt.json();
-                const jp = sttD.text;
+                const sttData = await sttResponse.json();
+                const jp = sttData.text;
 
                 if(!jp || jp.trim().length === 0) {
                     document.getElementById('status').innerText = "Could not hear you";
                     return;
                 }
 
+                // 履歴に日本語を先行表示
                 const id = Date.now();
-                list.insertAdjacentHTML('afterbegin', `<div class="item" id="${id}"><div class="label">In</div><div class="in">${jp}</div><div class="label">Out</div><div class="out" id="out-${id}">...</div></div>`);
+                list.insertAdjacentHTML('afterbegin', `
+                    <div class="item" id="${id}">
+                        <div class="label">In</div><div class="in">${jp}</div>
+                        <div class="label">Out</div><div class="out" id="out-${id}">...</div>
+                    </div>
+                `);
 
-                document.getElementById('status').innerText = "Translating...";
-                const gpt = await fetch("https://api.openai.com/v1/chat/completions", {
+                // 2. GPT-4o-mini (翻訳)
+                const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
                     method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
-                    body: JSON.stringify({ model: "gpt-4o-mini", messages: [{role:"system",content:"Translate to English."}, {role:"user",content:jp}] })
+                    body: JSON.stringify({ 
+                        model: "gpt-4o-mini", 
+                        messages: [
+                            {role:"system", content:"Translate the following Japanese to natural English. Return only the translated text."}, 
+                            {role:"user", content:jp}
+                        ] 
+                    })
                 });
-                const gptD = await gpt.json();
-                const en = gptD.choices[0].message.content;
+                const gptData = await gptResponse.json();
+                const en = gptData.choices[0].message.content;
 
                 document.getElementById(`out-${id}`).innerText = en;
 
-                const tts = await fetch("https://api.openai.com/v1/audio/speech", {
+                // 3. TTS (音声合成)
+                const ttsResponse = await fetch("https://api.openai.com/v1/audio/speech", {
                     method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
                     body: JSON.stringify({ model: "tts-1", voice: "alloy", input: en })
                 });
-                const audio = new Audio(URL.createObjectURL(await tts.blob()));
+                
+                const audioBlob = await ttsResponse.blob();
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioUrl);
+                
+                audio.onended = () => {
+                    document.getElementById('status').innerText = "Tap to start";
+                    URL.revokeObjectURL(audioUrl);
+                };
+
                 audio.play();
 
+                // 履歴をLocalStorageへ保存
                 const h = JSON.parse(localStorage.getItem('h') || '[]');
                 h.unshift({ jp, en });
                 localStorage.setItem('h', JSON.stringify(h.slice(0, 30)));
-
-                document.getElementById('status').innerText = "Tap to start";
-            } catch(e) {
-                document.getElementById('status').innerText = "Error: Check API Key";
-                console.error(e);
+                
+            } catch(e) { 
+                document.getElementById('status').innerText = "Error: API limit or key issue";
+                console.error(e); 
             }
         }
 
         function render() {
             const h = JSON.parse(localStorage.getItem('h') || '[]');
-            list.innerHTML = h.map(i => `<div class="item"><div class="label">In</div><div class="in">${i.jp}</div><div class="label">Out</div><div class="out" onclick="sp('${i.en.replace(/'/g,"")}')">${i.en}</div></div>`).join('');
+            list.innerHTML = h.map(i => `
+                <div class="item">
+                    <div class="label">In</div><div class="in">${i.jp}</div>
+                    <div class="label">Out</div><div class="out" onclick="sp('${i.en.replace(/'/g,"")}')">${i.en}</div>
+                </div>
+            `).join('');
         }
 
-        function clearH() { localStorage.removeItem('h'); render(); }
+        function clearH() { 
+            if(confirm('Clear all history?')) {
+                localStorage.removeItem('h'); 
+                render(); 
+            }
+        }
 
         async function sp(t) {
             const k = document.getElementById('key').value;
-            const res = await fetch("https://api.openai.com/v1/audio/speech", {
-                method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
-                body: JSON.stringify({ model: "tts-1", voice: "alloy", input: t })
-            });
-            new Audio(URL.createObjectURL(await res.blob())).play();
+            if(!k) return;
+            try {
+                const res = await fetch("https://api.openai.com/v1/audio/speech", {
+                    method: "POST", headers: { "Authorization": `Bearer ${k}`, "Content-Type": "application/json" },
+                    body: JSON.stringify({ model: "tts-1", voice: "alloy", input: t })
+                });
+                const blob = await res.blob();
+                new Audio(URL.createObjectURL(blob)).play();
+            } catch(e) { console.error(e); }
         }
     </script>
 </body>
