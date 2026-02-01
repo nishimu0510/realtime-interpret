@@ -18,11 +18,23 @@
         .label { font-size: 10px; font-weight: bold; color: #86868b; text-transform: uppercase; }
         .in { font-size: 15px; margin-bottom: 4px; color: #000; }
         .out { font-size: 17px; color: var(--primary); font-weight: 600; cursor: pointer; }
+        .notion-settings { margin-bottom: 16px; }
+        .notion-settings summary { font-size: 13px; color: #86868b; cursor: pointer; margin-bottom: 8px; }
+        .notion-settings input { margin-bottom: 8px; }
+        .item-header { display: flex; justify-content: space-between; align-items: flex-start; }
+        .item-body { flex: 1; }
+        .save-btn { background: none; border: 1px solid #d2d2d7; border-radius: 4px; width: 28px; height: 28px; font-size: 13px; font-weight: 700; cursor: pointer; color: #86868b; flex-shrink: 0; margin-left: 8px; margin-top: 2px; }
+        .save-btn.saved { color: #34c759; border-color: #34c759; cursor: default; }
     </style>
 </head>
 <body>
     <div class="container">
         <input type="password" id="key" placeholder="OpenAI Key">
+        <details class="notion-settings">
+            <summary>Notion Settings</summary>
+            <input type="password" id="nt" placeholder="Notion Integration Token">
+            <input type="text" id="nd" placeholder="Notion Database ID">
+        </details>
         <div class="main">
             <button id="btn">🎤</button>
             <div id="status">Tap to start</div>
@@ -62,6 +74,12 @@
             render();
             const savedKey = localStorage.getItem('k');
             if(savedKey) document.getElementById('key').value = savedKey;
+            const savedNt = localStorage.getItem('nt');
+            if(savedNt) document.getElementById('nt').value = savedNt;
+            const savedNd = localStorage.getItem('nd');
+            if(savedNd) document.getElementById('nd').value = savedNd;
+            document.getElementById('nt').addEventListener('change', e => localStorage.setItem('nt', e.target.value));
+            document.getElementById('nd').addEventListener('change', e => localStorage.setItem('nd', e.target.value));
         };
 
         // マイクストリームを完全に停止する関数
@@ -199,9 +217,10 @@
 
                 // 履歴をLocalStorageへ保存
                 const h = JSON.parse(localStorage.getItem('h') || '[]');
-                h.unshift({ jp, en });
+                h.unshift({ jp, en, saved: false });
                 localStorage.setItem('h', JSON.stringify(h.slice(0, 30)));
-                
+                render();
+
             } catch(e) {
                 const msg = e.name === 'AbortError' ? "Error: Timeout" : "Error: API limit or key issue";
                 document.getElementById('status').innerText = msg;
@@ -209,12 +228,57 @@
             }
         }
 
+        function hasNotionConfig() {
+            return !!(localStorage.getItem('nt') && localStorage.getItem('nd'));
+        }
+
+        async function saveToNotion(index) {
+            const h = JSON.parse(localStorage.getItem('h') || '[]');
+            const item = h[index];
+            if (!item || item.saved) return;
+
+            const btnEl = document.getElementById(`nb-${index}`);
+            btnEl.innerText = '...';
+            btnEl.disabled = true;
+
+            try {
+                const res = await fetch('/api/notion', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        token: localStorage.getItem('nt'),
+                        database_id: localStorage.getItem('nd'),
+                        japanese: item.jp,
+                        english: item.en,
+                    }),
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.error || 'Failed');
+                }
+                item.saved = true;
+                localStorage.setItem('h', JSON.stringify(h));
+                btnEl.innerText = '\u2713';
+                btnEl.classList.add('saved');
+            } catch (e) {
+                alert('Notion save failed: ' + e.message);
+                btnEl.innerText = 'N';
+                btnEl.disabled = false;
+            }
+        }
+
         function render() {
             const h = JSON.parse(localStorage.getItem('h') || '[]');
-            list.innerHTML = h.map(i => `
+            const nc = hasNotionConfig();
+            list.innerHTML = h.map((i, idx) => `
                 <div class="item">
-                    <div class="label">In</div><div class="in">${i.jp}</div>
-                    <div class="label">Out</div><div class="out" onclick="sp('${i.en.replace(/'/g,"")}')">${i.en}</div>
+                    <div class="item-header">
+                        <div class="item-body">
+                            <div class="label">In</div><div class="in">${i.jp}</div>
+                            <div class="label">Out</div><div class="out" onclick="sp('${i.en.replace(/'/g,"")}')">${i.en}</div>
+                        </div>
+                        ${nc ? `<button class="save-btn${i.saved ? ' saved' : ''}" id="nb-${idx}" onclick="${i.saved ? '' : `saveToNotion(${idx})`}" ${i.saved ? 'disabled' : ''}>${i.saved ? '\u2713' : 'N'}</button>` : ''}
+                    </div>
                 </div>
             `).join('');
         }
